@@ -1,8 +1,10 @@
+// server.js
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const rateLimit = require('express-rate-limit');
 require('dotenv').config();
+
 const { Connection, Keypair, PublicKey } = require('@solana/web3.js');
 const {
   getOrCreateAssociatedTokenAccount,
@@ -32,6 +34,9 @@ const mintAuthority = Keypair.fromSecretKey(
 const MINT = new PublicKey(process.env.MINT_ADDRESS);
 const PRICE = parseFloat(process.env.TOKEN_PRICE_PER_SPLOL);
 
+// ✅ In-memory leaderboard
+const leaderboard = [];
+
 // --- Purchase Route ---
 app.post('/api/purchase', async (req, res) => {
   const { wallet, amount, txSig } = req.body;
@@ -40,41 +45,70 @@ app.post('/api/purchase', async (req, res) => {
     return res.status(400).json({ error: 'Missing fields' });
   }
 
-  const buyer = new PublicKey(wallet);
-
   try {
+    // Step 1: Confirm Transaction
+    const tx = await connection.getParsedTransaction(txSig, {
+      commitment: 'confirmed',
+    });
+
+    if (!tx || !tx.meta || tx.meta.err) {
+      return res.status(400).json({ error: 'Transaction failed or not found' });
+    }
+
+    const sender = new PublicKey(wallet);
+    const expectedAmountLamports = Math.floor(amount * 1e9);
+    const destination = new PublicKey('EKrh19F53n9v5Wt8CaGy6fAAzZ75Jxo48jq8APqJoJry');
+
+    // Step 2: Verify SOL transfer details
+    const transferFound = tx.transaction.message.instructions.some((ix) => {
+      try {
+        const parsed = ix.parsed;
+        return (
+          parsed?.type === 'transfer' &&
+          parsed.info.source === sender.toBase58() &&
+          parsed.info.destination === destination.toBase58() &&
+          parseInt(parsed.info.lamports) >= expectedAmountLamports
+        );
+      } catch {
+        return false;
+      }
+    });
+
+    if (!transferFound) {
+      return res.status(400).json({ error: 'Invalid SOL transfer' });
+    }
+
+    // Step 3: Calculate token amount
     const mintInfo = await getMint(connection, MINT);
     const tokensToSend = Math.floor((amount / PRICE) * 10 ** mintInfo.decimals);
 
-    const buyerATA = await getOrCreateAssociatedTokenAccount(
-      connection,
-      mintAuthority,
-      MINT,
-      buyer
-    );
+    // Step 4: Send tokens
+    const buyerATA = await getOrCreateAssociatedTokenAccount(connection, mintAuthority, MINT, sender);
+    const senderATA = await getOrCreateAssociatedTokenAccount(connection, mintAuthority, MINT, mintAuthority.publicKey);
 
     await transfer(
       connection,
       mintAuthority,
-      await getOrCreateAssociatedTokenAccount(
-        connection,
-        mintAuthority,
-        MINT,
-        mintAuthority.publicKey
-      ),
+      senderATA.address,
       buyerATA.address,
       mintAuthority,
       tokensToSend
     );
 
-    const log = `✅ ${new Date().toISOString()} - Sent ${tokensToSend} SPLOL to ${wallet} | TX: ${txSig}`;
-    console.log(log);
-    fs.appendFileSync('logs.txt', log + '\n');
+    // ✅ Save to leaderboard
+    leaderboard.push({
+      wallet,
+      amount,
+      txSig,
+      time: new Date().toISOString(),
+    });
 
+    console.log(`✅ Sent ${tokensToSend} SPLOL to ${wallet}`);
     res.json({ success: true, tokensSent: tokensToSend });
+
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Token transfer failed' });
+    res.status(500).json({ error: 'Server error verifying transaction' });
   }
 });
 
@@ -105,6 +139,12 @@ app.post('/api/verify', async (req, res) => {
     console.error(err);
     return res.status(500).json({ error: 'Verification failed' });
   }
+});
+
+// --- Leaderboard Endpoint ---
+app.get('/api/leaderboard', (req, res) => {
+  const sorted = leaderboard.sort((a, b) => b.amount - a.amount);
+  res.json(sorted);
 });
 
 // --- Health Check ---
