@@ -1,42 +1,76 @@
 const express = require('express');
 const cors = require('cors');
+const fs = require('fs');
+const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 const { Connection, Keypair, PublicKey } = require('@solana/web3.js');
-const { getOrCreateAssociatedTokenAccount, transfer, getMint } = require('@solana/spl-token');
+const {
+  getOrCreateAssociatedTokenAccount,
+  transfer,
+  getMint,
+} = require('@solana/spl-token');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Middleware
 app.use(cors());
 app.use(express.json());
 
-const connection = new Connection(process.env.SOLANA_RPC, 'confirmed');
-const mintAuthority = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(process.env.MINT_AUTHORITY_SECRET_KEY)));
-const MINT = new PublicKey(process.env.MINT_ADDRESS);
-const PRICE = parseFloat(process.env.TOKEN_PRICE_PER_SPLOL); // 0.0008
+// Rate Limiter
+const limiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 20, // limit each IP to 20 requests per minute
+});
+app.use(limiter);
 
+// Solana config
+const connection = new Connection(process.env.SOLANA_RPC, 'confirmed');
+const mintAuthority = Keypair.fromSecretKey(
+  Uint8Array.from(JSON.parse(process.env.MINT_AUTHORITY_SECRET_KEY))
+);
+const MINT = new PublicKey(process.env.MINT_ADDRESS);
+const PRICE = parseFloat(process.env.TOKEN_PRICE_PER_SPLOL);
+
+// --- Purchase Route ---
 app.post('/api/purchase', async (req, res) => {
   const { wallet, amount, txSig } = req.body;
+
   if (!wallet || !amount || !txSig) {
     return res.status(400).json({ error: 'Missing fields' });
   }
 
   const buyer = new PublicKey(wallet);
-  const mintInfo = await getMint(connection, MINT);
-  const tokensToSend = Math.floor((amount / PRICE) * 10 ** mintInfo.decimals);
 
   try {
-    const buyerATA = await getOrCreateAssociatedTokenAccount(connection, mintAuthority, MINT, buyer);
+    const mintInfo = await getMint(connection, MINT);
+    const tokensToSend = Math.floor((amount / PRICE) * 10 ** mintInfo.decimals);
+
+    const buyerATA = await getOrCreateAssociatedTokenAccount(
+      connection,
+      mintAuthority,
+      MINT,
+      buyer
+    );
+
     await transfer(
       connection,
       mintAuthority,
-      await getOrCreateAssociatedTokenAccount(connection, mintAuthority, MINT, mintAuthority.publicKey),
+      await getOrCreateAssociatedTokenAccount(
+        connection,
+        mintAuthority,
+        MINT,
+        mintAuthority.publicKey
+      ),
       buyerATA.address,
       mintAuthority,
       tokensToSend
     );
 
-    console.log(`✅ Sent ${tokensToSend} SPLOL to ${wallet}`);
+    const log = `✅ ${new Date().toISOString()} - Sent ${tokensToSend} SPLOL to ${wallet} | TX: ${txSig}`;
+    console.log(log);
+    fs.appendFileSync('logs.txt', log + '\n');
+
     res.json({ success: true, tokensSent: tokensToSend });
   } catch (err) {
     console.error(err);
@@ -44,10 +78,41 @@ app.post('/api/purchase', async (req, res) => {
   }
 });
 
+// --- Verify Transaction ---
+app.post('/api/verify', async (req, res) => {
+  const { txSig, wallet, amount } = req.body;
+
+  if (!txSig || !wallet || !amount) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  try {
+    const tx = await connection.getTransaction(txSig, {
+      commitment: 'confirmed',
+    });
+
+    if (!tx) return res.status(404).json({ error: 'Transaction not found' });
+
+    const paid = tx.meta?.postBalances[0] < tx.meta?.preBalances[0];
+    const fromPubkey = tx.transaction.message.accountKeys[0].toString();
+
+    if (paid && fromPubkey === wallet) {
+      return res.json({ success: true });
+    } else {
+      return res.status(400).json({ error: 'Invalid transaction' });
+    }
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Verification failed' });
+  }
+});
+
+// --- Health Check ---
 app.get('/', (req, res) => {
   res.json({ message: 'Spacelol backend is live' });
 });
 
+// --- Start Server ---
 app.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
 });
