@@ -1,4 +1,3 @@
-
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
@@ -60,9 +59,10 @@ app.get('/', (req, res) => {
 });
 
 // Final route
-app.listen(process.env.PORT || 5000, () => {
-  console.log(`✅ Server running on port ${process.env.PORT || 5000}`);
+app.listen(PORT, () => {
+  console.log(`✅ Server running on port ${PORT}`);
 });
+<<<<<<< HEAD
 
 =======
 const express = require('express');
@@ -130,3 +130,5 @@ app.listen(process.env.PORT || 5000, () => {
   console.log(`✅ Server running on port ${process.env.PORT || 5000}`);
 });
 
+=======
+>>>>>>> a2cc020 (Resolve merge and finalize server update)
