@@ -1,9 +1,8 @@
-// server.js
 const express = require('express');
 const cors = require('cors');
-const fs = require('fs');
 const rateLimit = require('express-rate-limit');
 require('dotenv').config();
+const fs = require('fs');
 const { Connection, Keypair, PublicKey } = require('@solana/web3.js');
 const {
   getOrCreateAssociatedTokenAccount,
@@ -14,7 +13,8 @@ const {
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Middleware
+// === Middleware ===
+app.set('trust proxy', true); // fixes rate-limit warnings behind proxies
 app.use(cors());
 app.use(express.json());
 
@@ -24,7 +24,7 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-// Solana Config
+// === Solana Config ===
 const connection = new Connection(process.env.SOLANA_RPC, 'confirmed');
 const mintAuthority = Keypair.fromSecretKey(
   Uint8Array.from(JSON.parse(process.env.MINT_AUTHORITY_SECRET_KEY))
@@ -32,8 +32,8 @@ const mintAuthority = Keypair.fromSecretKey(
 const MINT = new PublicKey(process.env.MINT_ADDRESS);
 const PRICE = parseFloat(process.env.TOKEN_PRICE_PER_SPLOL);
 
-// In-memory leaderboard
-const leaderboard = [];
+// === In-Memory Leaderboard ===
+let leaderboard = [];
 
 // === Purchase Route ===
 app.post('/api/purchase', async (req, res) => {
@@ -43,18 +43,29 @@ app.post('/api/purchase', async (req, res) => {
     return res.status(400).json({ error: 'Missing fields' });
   }
 
-  const buyer = new PublicKey(wallet);
-
   try {
+    // Get actual sender wallet from tx
+    const tx = await connection.getTransaction(txSig, {
+      commitment: 'confirmed',
+    });
+
+    if (!tx) {
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+
+    const actualSender = tx.transaction.message.accountKeys[0].toString();
+
     const mintInfo = await getMint(connection, MINT);
     const tokensToSend = Math.floor((amount / PRICE) * 10 ** mintInfo.decimals);
 
+    const buyer = new PublicKey(actualSender);
     const buyerATA = await getOrCreateAssociatedTokenAccount(
       connection,
       mintAuthority,
       MINT,
       buyer
     );
+
     const senderATA = await getOrCreateAssociatedTokenAccount(
       connection,
       mintAuthority,
@@ -71,25 +82,26 @@ app.post('/api/purchase', async (req, res) => {
       tokensToSend
     );
 
-    const log = `✅ ${new Date().toISOString()} - Sent ${tokensToSend} SPLOL to ${wallet} | TX: ${txSig}`;
+    // Log and leaderboard
+    const log = `✅ ${new Date().toISOString()} - Sent ${tokensToSend} SPLOL to ${actualSender} | TX: ${txSig}`;
     console.log(log);
     fs.appendFileSync('logs.txt', log + '\n');
 
     leaderboard.push({
-      wallet,
-      amount,
+      wallet: actualSender,
+      amount: parseFloat(amount),
       txSig,
-      time: new Date().toISOString(),
+      timestamp: new Date().toISOString(),
     });
 
     res.json({ success: true, tokensSent: tokensToSend });
   } catch (err) {
-    console.error(err);
+    console.error('❌ Token transfer error:', err);
     res.status(500).json({ error: 'Token transfer failed' });
   }
 });
 
-// === Verify Transaction ===
+// === Verify Route ===
 app.post('/api/verify', async (req, res) => {
   const { txSig, wallet, amount } = req.body;
 
@@ -104,8 +116,8 @@ app.post('/api/verify', async (req, res) => {
 
     if (!tx) return res.status(404).json({ error: 'Transaction not found' });
 
-    const paid = tx.meta?.postBalances[0] < tx.meta?.preBalances[0];
     const fromPubkey = tx.transaction.message.accountKeys[0].toString();
+    const paid = tx.meta?.postBalances[0] < tx.meta?.preBalances[0];
 
     if (paid && fromPubkey === wallet) {
       return res.json({ success: true });
@@ -113,7 +125,7 @@ app.post('/api/verify', async (req, res) => {
       return res.status(400).json({ error: 'Invalid transaction' });
     }
   } catch (err) {
-    console.error('❌ Backend error:', err);
+    console.error('❌ Verify error:', err);
     return res.status(500).json({ error: 'Verification failed' });
   }
 });
