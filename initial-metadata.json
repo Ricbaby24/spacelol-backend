@@ -2,5 +2,15 @@
   "name": "Spacelol",
   "symbol": "SPLOL",
   "description": "Spacelol ($SPLOL) is a meme-powered token taking laughter and degens to the moon.",
-   "uri": "https://raw.githubusercontent.com/Ricbaby24/spacelol-assets/main/spacelol-token.json"
+  "image": "https://raw.githubusercontent.com/Ricbaby24/spacelol-assets/main/spacelol.png",
+  "seller_fee_basis_points": 0,
+  "properties": {
+    "files": [
+      {
+        "uri": "https://raw.githubusercontent.com/Ricbaby24/spacelol-assets/main/spacelol.png",
+        "type": "image/png"
+      }
+    ],
+    "category": "image"
+  }
 }
